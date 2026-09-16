@@ -59,7 +59,6 @@ Reply in plain text only. Do not use markdown formatting, bullet symbols, or emo
 
 MODEL = "claude-sonnet-4-6"
 AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
-abuse_strikes: dict[str, int] = {}
 abuse_audit_log: dict[str, list[dict]] = {}
 db_pool: asyncpg.Pool | None = None
 db_pool_lock = asyncio.Lock()
@@ -112,32 +111,55 @@ async def get_db_pool() -> asyncpg.Pool:
                     CREATE TABLE IF NOT EXISTS sessions (
                         session_id TEXT PRIMARY KEY,
                         escalated BOOLEAN NOT NULL DEFAULT FALSE,
+                        strike_count INTEGER NOT NULL DEFAULT 0,
                         created_at TIMESTAMP NOT NULL DEFAULT NOW(),
                         updated_at TIMESTAMP NOT NULL DEFAULT NOW()
                     )
                     """
                 )
+                await conn.execute(
+                    """
+                    ALTER TABLE sessions
+                    ADD COLUMN IF NOT EXISTS strike_count INTEGER NOT NULL DEFAULT 0
+                    """
+                )
     return db_pool
 
 
-async def get_or_create_session_escalated(session_id: str) -> bool:
-    # This replaces the previous in-memory `escalated_sessions` dictionary so
-    # escalation state survives backend restarts.
+async def get_or_create_session_state(session_id: str) -> tuple[bool, int]:
+    # Session moderation state lives in DB so strike counts and escalation
+    # survive restarts, revisions, and scale events.
     pool = await get_db_pool()
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT escalated FROM sessions WHERE session_id = $1", session_id
+            "SELECT escalated, strike_count FROM sessions WHERE session_id = $1", session_id
         )
         if row is None:
-            await conn.execute(
+            row = await conn.fetchrow(
                 """
-                INSERT INTO sessions (session_id, escalated, created_at, updated_at)
-                VALUES ($1, FALSE, NOW(), NOW())
+                INSERT INTO sessions (session_id, escalated, strike_count, created_at, updated_at)
+                VALUES ($1, FALSE, 0, NOW(), NOW())
+                RETURNING escalated, strike_count
                 """,
                 session_id,
             )
-            return False
-        return bool(row["escalated"])
+        return bool(row["escalated"]), int(row["strike_count"])
+
+
+async def increment_session_strike(session_id: str) -> int:
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO sessions (session_id, escalated, strike_count, created_at, updated_at)
+            VALUES ($1, FALSE, 1, NOW(), NOW())
+            ON CONFLICT (session_id) DO UPDATE
+            SET strike_count = sessions.strike_count + 1, updated_at = NOW()
+            RETURNING strike_count
+            """,
+            session_id,
+        )
+        return int(row["strike_count"])
 
 
 async def set_session_escalated(session_id: str) -> None:
@@ -354,14 +376,6 @@ def evaluate_abuse(
 ) -> dict:
     try:
         model_result = model_assisted_abuse_check(provider, client, text)
-        print(
-            "Moderation result:",
-            {
-                "abusive": model_result["abusive"],
-                "severity": model_result["severity"],
-                "raw": str(model_result["raw"])[:160],
-            },
-        )
         # region agent log
         debug_log(
             "initial-debug",
@@ -376,7 +390,6 @@ def evaluate_abuse(
         )
         # endregion
     except Exception as exc:
-        print(f"Moderation classifier exception: {type(exc).__name__}: {exc}")
         # region agent log
         debug_log(
             "initial-debug",
@@ -452,7 +465,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             },
         )
         # endregion
-        is_escalated = await get_or_create_session_escalated(request.session_id)
+        is_escalated, strike_count = await get_or_create_session_state(request.session_id)
         if is_escalated:
             # region agent log
             debug_log(
@@ -479,7 +492,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
                 "session_id": request.session_id,
                 "latest_role": request.messages[-1].role if request.messages else None,
                 "latest_user_message_excerpt": latest_user_message[:120],
-                "existing_strikes": abuse_strikes.get(request.session_id, 0),
+                "existing_strikes": strike_count,
                 "is_escalated": is_escalated,
             },
         )
@@ -504,8 +517,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             )
             # endregion
             if abuse_eval["abusive"]:
-                current_strikes = abuse_strikes.get(request.session_id, 0) + 1
-                abuse_strikes[request.session_id] = current_strikes
+                current_strikes = await increment_session_strike(request.session_id)
                 # region agent log
                 debug_log(
                     "initial-debug",
