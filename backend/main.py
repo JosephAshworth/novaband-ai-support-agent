@@ -540,6 +540,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             return ChatResponse(
                 reply="Sorry, I'm having trouble connecting right now. Please try again in a moment, or call us on 0800 123 4567."
             )
+        print(f"Unhandled /chat exception: {type(exc).__name__}: {exc}")
         # region agent log
         debug_log(
             "initial-debug",
