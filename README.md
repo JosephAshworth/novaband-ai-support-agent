@@ -43,13 +43,14 @@ pip install -r requirements.txt
 
 Create a `.env` file in the `backend` directory:
 
-```
+```env
 ANTHROPIC_API_KEY=your_api_key_here
 LLM_PROVIDER=anthropic
 AZURE_OPENAI_API_KEY=your_azure_api_key_here
 AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com
 AZURE_OPENAI_DEPLOYMENT_NAME=your_deployment_name
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/novaband_support
+CORS_ALLOW_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
 `LLM_PROVIDER` accepts `anthropic` (default) or `azure_openai`. If unset, the backend uses Anthropic as before.
@@ -86,6 +87,7 @@ Request body:
 
 ```json
 {
+  "session_id": "example-session-id",
   "messages": [
     { "role": "user", "content": "Hello" },
     { "role": "assistant", "content": "Hi, how can I help?" }
@@ -103,10 +105,19 @@ Response:
 
 The frontend sends the full conversation history on every message so the assistant retains context across turns.
 
+**GET `/health`**
+
+Response:
+
+```json
+{ "status": "ok" }
+```
+
 ## Notes
 
 - The API key must be set in `backend/.env` — it is never hardcoded.
 - This is a demo: Nova cannot access live account data and will say so when asked for specific account details.
+- Moderation strike counts are persisted in PostgreSQL (`sessions.strike_count`) so escalation behavior survives restarts, revisions, and scaling.
 
 ## Azure Deployment (Frontend + Backend)
 
@@ -120,8 +131,8 @@ This repository uses GitHub Actions for Azure deployments:
 - `VITE_API_BASE_URL` (example: `https://novaband-api.<region>.azurecontainerapps.io`)
 - `AZURE_RESOURCE_GROUP`
 - `AZURE_CONTAINER_APP_NAME`
-- `AZURE_CONTAINER_REGISTRY_NAME` (example: `novabandacr`)
-- `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` (example: `novabandacr.azurecr.io`)
+- `AZURE_CONTAINER_REGISTRY_NAME` (example: `novabandacr01`)
+- `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` (example: `novabandacr01.azurecr.io`)
 
 ### Required GitHub Actions secrets
 
@@ -132,8 +143,19 @@ This repository uses GitHub Actions for Azure deployments:
 
 ### Backend runtime environment
 
+Set these on the backend host:
+
+- `ANTHROPIC_API_KEY`
+- `LLM_PROVIDER`
+- `DATABASE_URL`
+- `CORS_ALLOW_ORIGINS`
+
 Set `CORS_ALLOW_ORIGINS` on the backend host to include your frontend URL:
 
 `https://<your-static-web-app>.azurestaticapps.net`
 
 If needed, include multiple origins as a comma-separated list.
+
+For Supabase in Azure Container Apps, use a Session Pooler URL with SSL:
+
+`postgresql://postgres.<project-ref>:<password>@aws-0-eu-west-2.pooler.supabase.com:5432/postgres?sslmode=require`
