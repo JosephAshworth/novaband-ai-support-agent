@@ -75,6 +75,18 @@ SESSION_CLOSED_REPLY = (
 )
 
 
+def clear_proxy_env_vars() -> None:
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ):
+        os.environ.pop(key, None)
+
+
 def get_database_url() -> str:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
@@ -334,6 +346,8 @@ def evaluate_abuse(
 
 def get_client() -> tuple[Literal["anthropic", "azure_openai"], Any]:
     provider = get_llm_provider()
+    # Ensure SDK HTTP clients don't inherit container-level proxy env vars.
+    clear_proxy_env_vars()
     # region agent log
     debug_log(
         "initial-debug",
@@ -540,7 +554,6 @@ async def chat(request: ChatRequest) -> ChatResponse:
             return ChatResponse(
                 reply="Sorry, I'm having trouble connecting right now. Please try again in a moment, or call us on 0800 123 4567."
             )
-        print(f"Unhandled /chat exception: {type(exc).__name__}: {exc}")
         # region agent log
         debug_log(
             "initial-debug",
