@@ -68,18 +68,6 @@ MAX_ABUSE_STRIKES = 2
 MAX_AUDIT_EVENTS_PER_SESSION = 100
 DEBUG_LOG_PATH = "/Users/Joseph3/novaband support bot/.cursor/debug-b88ccb.log"
 
-# Deterministic profanity detection used for moderation strikes.
-ABUSIVE_WORD_PATTERNS = [
-    r"\bf+u+c+k+\b",
-    r"\bs+h+i+t+\b",
-    r"\bb+i+t+c+h+\b",
-    r"\bc+u+n+t+\b",
-    r"\ba+s+s+h+o+l+e+\b",
-    r"\bd+i+c+k+h*e*a*d+\b",
-    r"\bb+a+s+t+a+r+d+\b",
-    r"\bm+o+t+h+e+r+f+u+c+k+e*r+\b",
-]
-
 SESSION_CLOSED_REPLY = (
     "This conversation has been closed. If you need help with your NovaBand account, "
     "please call our support team on 0800 123 4567. If you think this was a mistake, "
@@ -294,7 +282,8 @@ def model_assisted_abuse_check(
                 "role": "user",
                 "content": (
                     "Classify whether this message is abusive, insulting, or aggressive.\n"
-                    "Treat abbreviated profanity, slang, and obfuscated profanity as abusive if likely.\n"
+                    "Treat any profanity, sexual vulgarity, slur, or insult as ABUSIVE: yes, even if short, joking, or standalone.\n"
+                    "Treat abbreviated profanity, slang, and obfuscated profanity as abusive when likely.\n"
                     "If uncertain, prefer ABUSIVE: yes for safety.\n"
                     "Return exactly three lines and nothing else:\n"
                     "ABUSIVE: yes/no\n"
@@ -308,7 +297,32 @@ def model_assisted_abuse_check(
     lower_raw = raw.lower()
 
     abusive_match = re.search(r"abusive:\s*(yes|true|1|y|no|false|0|n)\b", lower_raw)
-    abusive = abusive_match.group(1) in {"yes", "true", "1", "y"} if abusive_match else False
+    if abusive_match:
+        abusive = abusive_match.group(1) in {"yes", "true", "1", "y"}
+    else:
+        # Retry with a stricter model-only yes/no prompt if format was not followed.
+        retry_raw = call_model_text(
+            provider=provider,
+            client=client,
+            max_tokens=12,
+            temperature=0,
+            messages=[
+                {
+                    "role": "user",
+                    "content": (
+                        "Answer with one word only: YES or NO.\n"
+                        "Is this message abusive, insulting, aggressive, profane, or offensive?\n\n"
+                        f"Message: {text}"
+                    ),
+                }
+            ],
+        ).strip()
+        retry_lower = retry_raw.lower()
+        yes_no_match = re.search(r"\b(yes|no)\b", retry_lower)
+        abusive = yes_no_match.group(1) == "yes" if yes_no_match else False
+        raw = f"{raw}\nRETRY: {retry_raw}"
+        lower_raw = raw.lower()
+
     severity = "unknown"
     for candidate in ("low", "medium", "high"):
         if f"severity: {candidate}" in lower_raw:
@@ -330,52 +344,38 @@ def model_assisted_abuse_check(
     return {"abusive": abusive, "severity": severity, "raw": raw}
 
 
-def normalize_for_abuse_detection(text: str) -> str:
-    normalized = text.lower()
-    substitutions = str.maketrans(
-        {
-            "0": "o",
-            "1": "i",
-            "3": "e",
-            "4": "a",
-            "5": "s",
-            "7": "t",
-            "@": "a",
-            "$": "s",
-            "!": "i",
-            "|": "i",
-        }
-    )
-    normalized = normalized.translate(substitutions)
-    return re.sub(r"\s+", " ", normalized).strip()
+def evaluate_abuse(
+    provider: Literal["anthropic", "azure_openai"], client: Any, text: str
+) -> dict:
+    try:
+        model_result = model_assisted_abuse_check(provider, client, text)
+        # region agent log
+        debug_log(
+            "initial-debug",
+            "H2",
+            "main.py:evaluate_abuse",
+            "Model-assisted abuse evaluation completed",
+            {
+                "abusive": model_result["abusive"],
+                "severity": model_result["severity"],
+                "raw_excerpt": str(model_result["raw"])[:200],
+            },
+        )
+        # endregion
+    except Exception:
+        # region agent log
+        debug_log(
+            "initial-debug",
+            "H2",
+            "main.py:evaluate_abuse",
+            "Moderation classifier call failed, defaulting to non-abusive",
+            {"text_excerpt": text[:120]},
+        )
+        # endregion
+        model_result = {"abusive": False, "severity": "unknown", "raw": "failed"}
 
-
-def evaluate_abuse(text: str) -> dict:
-    normalized = normalize_for_abuse_detection(text)
-    matches = [pattern for pattern in ABUSIVE_WORD_PATTERNS if re.search(pattern, normalized)]
-    abusive = bool(matches)
-    model_result = {
-        "abusive": abusive,
-        "severity": "medium" if abusive else "low",
-        "raw": "deterministic_match" if abusive else "deterministic_clean",
-        "matched_patterns": matches[:3],
-        "normalized_excerpt": normalized[:120],
-    }
-    # region agent log
-    debug_log(
-        "initial-debug",
-        "H2",
-        "main.py:evaluate_abuse",
-        "Deterministic abuse evaluation completed",
-        {
-            "abusive": abusive,
-            "matched_count": len(matches),
-            "normalized_excerpt": normalized[:120],
-        },
-    )
-    # endregion
-
-    confidence = "high" if abusive else "high"
+    abusive = model_result["abusive"]
+    confidence = "high" if abusive else "low"
     return {
         "abusive": abusive,
         "confidence": confidence,
@@ -469,7 +469,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
         provider, client = get_client()
         if latest_user_message:
-            abuse_eval = evaluate_abuse(latest_user_message)
+            abuse_eval = evaluate_abuse(provider, client, latest_user_message)
             # region agent log
             debug_log(
                 "initial-debug",
