@@ -566,6 +566,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
                 "traceback": traceback.format_exc()[:4000],
             },
         )
+        print("Unhandled /chat exception traceback:")
+        print(traceback.format_exc())
         # endregion
         return ChatResponse(
             reply="Sorry, something went wrong. Please try again, or call us on 0800 123 4567."
