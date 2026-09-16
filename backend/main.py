@@ -3,11 +3,11 @@ import json
 import time
 import re
 import asyncio
+import traceback
 from typing import Any, Literal
 
 import anthropic
 import asyncpg
-import httpx
 import openai
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -89,7 +89,11 @@ async def get_db_pool() -> asyncpg.Pool:
 
     async with db_pool_lock:
         if db_pool is None:
-            db_pool = await asyncpg.create_pool(get_database_url())
+            db_pool = await asyncpg.create_pool(
+                get_database_url(),
+                min_size=1,
+                max_size=5,
+            )
             async with db_pool.acquire() as conn:
                 await conn.execute(
                     """
@@ -351,19 +355,13 @@ def get_client() -> tuple[Literal["anthropic", "azure_openai"], Any]:
         api_key = os.getenv("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY is not set in environment")
-        # Avoid inheriting proxy settings from host environment that can break TLS.
-        return provider, anthropic.Anthropic(
-            api_key=api_key,
-            http_client=httpx.Client(trust_env=False, timeout=30.0),
-        )
+        return provider, anthropic.Anthropic(api_key=api_key)
 
     api_key, endpoint, _ = get_azure_openai_config()
-    # Avoid inheriting proxy settings from host environment that can break TLS.
     return provider, AzureOpenAI(
         api_key=api_key,
         azure_endpoint=endpoint,
         api_version=AZURE_OPENAI_API_VERSION,
-        http_client=httpx.Client(trust_env=False, timeout=30.0),
     )
 
 
@@ -548,7 +546,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
             "H5",
             "main.py:chat:generic_exception",
             "Unexpected exception caught in /chat",
-            {},
+            {
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "traceback": traceback.format_exc()[:4000],
+            },
         )
         # endregion
         return ChatResponse(
