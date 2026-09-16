@@ -107,3 +107,33 @@ The frontend sends the full conversation history on every message so the assista
 
 - The API key must be set in `backend/.env` — it is never hardcoded.
 - This is a demo: Nova cannot access live account data and will say so when asked for specific account details.
+
+## Azure Deployment (Frontend + Backend)
+
+This repository uses GitHub Actions for Azure deployments:
+
+- `/.github/workflows/azure-static-web-apps.yml` deploys the frontend to Azure Static Web Apps.
+- `/.github/workflows/deploy.yml` deploys the backend container to Azure Container Apps.
+
+### Required GitHub Actions variables
+
+- `VITE_API_BASE_URL` (example: `https://novaband-api.<region>.azurecontainerapps.io`)
+- `AZURE_RESOURCE_GROUP`
+- `AZURE_CONTAINER_APP_NAME`
+- `AZURE_CONTAINER_REGISTRY_NAME` (example: `novabandacr`)
+- `AZURE_CONTAINER_REGISTRY_LOGIN_SERVER` (example: `novabandacr.azurecr.io`)
+
+### Required GitHub Actions secrets
+
+- `AZURE_STATIC_WEB_APPS_API_TOKEN`
+- `AZURE_CLIENT_ID`
+- `AZURE_TENANT_ID`
+- `AZURE_SUBSCRIPTION_ID`
+
+### Backend runtime environment
+
+Set `CORS_ALLOW_ORIGINS` on the backend host to include your frontend URL:
+
+`https://<your-static-web-app>.azurestaticapps.net`
+
+If needed, include multiple origins as a comma-separated list.

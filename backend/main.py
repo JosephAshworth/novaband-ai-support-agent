@@ -19,9 +19,17 @@ load_dotenv()
 
 app = FastAPI(title="NovaBand Support API")
 
+default_cors_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+configured_cors_origins = os.getenv("CORS_ALLOW_ORIGINS", "")
+cors_allow_origins = [
+    origin.strip() for origin in configured_cors_origins.split(",") if origin.strip()
+]
+if not cors_allow_origins:
+    cors_allow_origins = default_cors_origins.copy()
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=cors_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

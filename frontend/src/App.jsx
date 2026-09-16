@@ -6,6 +6,8 @@ const WELCOME_MESSAGE = {
     "Hello! I'm Nova, NovaBand's customer support assistant. I can help with your plan, usage, billing, network issues, SIM swaps, and roaming. How can I help you today?",
 }
 
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+
 function App() {
   const [messages, setMessages] = useState([WELCOME_MESSAGE])
   const [input, setInput] = useState('')
@@ -33,7 +35,7 @@ function App() {
     setLoading(true)
 
     try {
-      const response = await fetch('/chat', {
+      const response = await fetch(`${API_BASE_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
