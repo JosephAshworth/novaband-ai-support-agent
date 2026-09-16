@@ -246,12 +246,17 @@ def call_model_text(
             "max_tokens": max_tokens,
             "messages": messages,
         }
-        if temperature is not None:
-            request_kwargs["temperature"] = temperature
         if system_prompt is not None:
             request_kwargs["system"] = system_prompt
         response = client.messages.create(**request_kwargs)
-        return response.content[0].text
+        text_blocks = [
+            block.text
+            for block in response.content
+            if getattr(block, "type", None) == "text" and getattr(block, "text", None)
+        ]
+        if text_blocks:
+            return "\n".join(text_blocks)
+        return ""
 
     _, _, deployment_name = get_azure_openai_config()
     openai_messages = messages
@@ -275,21 +280,23 @@ def model_assisted_abuse_check(
     raw = call_model_text(
         provider=provider,
         client=client,
-        max_tokens=80,
+        max_tokens=40,
         temperature=0,
+        system_prompt=(
+            "You are a strict safety classifier. "
+            "Your only job is to classify abusive or offensive language."
+        ),
         messages=[
             {
                 "role": "user",
                 "content": (
-                    "Classify whether this message is abusive, insulting, or aggressive.\n"
-                    "Treat any profanity, sexual vulgarity, slur, or insult as ABUSIVE: yes, even if short, joking, or standalone.\n"
-                    "Treat abbreviated profanity, slang, and obfuscated profanity as abusive when likely.\n"
-                    "If uncertain, prefer ABUSIVE: yes for safety.\n"
-                    "Return exactly three lines and nothing else:\n"
-                    "ABUSIVE: yes/no\n"
-                    "SEVERITY: low/medium/high\n"
-                    "REASON: <short reason>\n\n"
-                    f"Message: {text}"
+                    "Classify this message.\n"
+                    "Mark ABUSIVE: yes for profanity, vulgar sexual language, slurs, insults, threats, or harassment.\n"
+                    "This includes short standalone profanity and rude slang.\n"
+                    "If uncertain, answer yes.\n"
+                    "Return EXACTLY one line and nothing else:\n"
+                    "ABUSIVE: yes/no\n\n"
+                    f"Message: {text!r}"
                 ),
             }
         ],
@@ -304,15 +311,17 @@ def model_assisted_abuse_check(
         retry_raw = call_model_text(
             provider=provider,
             client=client,
-            max_tokens=12,
+            max_tokens=6,
             temperature=0,
+            system_prompt="You are a strict yes/no moderation classifier.",
             messages=[
                 {
                     "role": "user",
                     "content": (
-                        "Answer with one word only: YES or NO.\n"
-                        "Is this message abusive, insulting, aggressive, profane, or offensive?\n\n"
-                        f"Message: {text}"
+                        "Reply with only YES or NO.\n"
+                        "Is this message abusive or offensive? "
+                        "Count profanity and insults as abusive.\n\n"
+                        f"Message: {text!r}"
                     ),
                 }
             ],
@@ -323,11 +332,7 @@ def model_assisted_abuse_check(
         raw = f"{raw}\nRETRY: {retry_raw}"
         lower_raw = raw.lower()
 
-    severity = "unknown"
-    for candidate in ("low", "medium", "high"):
-        if f"severity: {candidate}" in lower_raw:
-            severity = candidate
-            break
+    severity = "medium" if abusive else "low"
     # region agent log
     debug_log(
         "initial-debug",
@@ -362,17 +367,21 @@ def evaluate_abuse(
             },
         )
         # endregion
-    except Exception:
+    except Exception as exc:
         # region agent log
         debug_log(
             "initial-debug",
             "H2",
             "main.py:evaluate_abuse",
             "Moderation classifier call failed, defaulting to non-abusive",
-            {"text_excerpt": text[:120]},
+            {
+                "text_excerpt": text[:120],
+                "error_type": type(exc).__name__,
+                "error_message": str(exc)[:300],
+            },
         )
         # endregion
-        model_result = {"abusive": False, "severity": "unknown", "raw": "failed"}
+        model_result = {"abusive": False, "severity": "unknown", "raw": "failed_open"}
 
     abusive = model_result["abusive"]
     confidence = "high" if abusive else "low"
