@@ -68,6 +68,18 @@ MAX_ABUSE_STRIKES = 2
 MAX_AUDIT_EVENTS_PER_SESSION = 100
 DEBUG_LOG_PATH = "/Users/Joseph3/novaband support bot/.cursor/debug-b88ccb.log"
 
+# Deterministic profanity detection used for moderation strikes.
+ABUSIVE_WORD_PATTERNS = [
+    r"\bf+u+c+k+\b",
+    r"\bs+h+i+t+\b",
+    r"\bb+i+t+c+h+\b",
+    r"\bc+u+n+t+\b",
+    r"\ba+s+s+h+o+l+e+\b",
+    r"\bd+i+c+k+h*e*a*d+\b",
+    r"\bb+a+s+t+a+r+d+\b",
+    r"\bm+o+t+h+e+r+f+u+c+k+e*r+\b",
+]
+
 SESSION_CLOSED_REPLY = (
     "This conversation has been closed. If you need help with your NovaBand account, "
     "please call our support team on 0800 123 4567. If you think this was a mistake, "
@@ -318,25 +330,52 @@ def model_assisted_abuse_check(
     return {"abusive": abusive, "severity": severity, "raw": raw}
 
 
-def evaluate_abuse(
-    provider: Literal["anthropic", "azure_openai"], client: Any, text: str
-) -> dict:
-    try:
-        model_result = model_assisted_abuse_check(provider, client, text)
-    except Exception:
-        # region agent log
-        debug_log(
-            "initial-debug",
-            "H2",
-            "main.py:evaluate_abuse",
-            "Moderation classifier call failed, using fallback non-abusive result",
-            {"text_excerpt": text[:120]},
-        )
-        # endregion
-        model_result = {"abusive": False, "severity": "unknown", "raw": "failed"}
+def normalize_for_abuse_detection(text: str) -> str:
+    normalized = text.lower()
+    substitutions = str.maketrans(
+        {
+            "0": "o",
+            "1": "i",
+            "3": "e",
+            "4": "a",
+            "5": "s",
+            "7": "t",
+            "@": "a",
+            "$": "s",
+            "!": "i",
+            "|": "i",
+        }
+    )
+    normalized = normalized.translate(substitutions)
+    return re.sub(r"\s+", " ", normalized).strip()
 
-    abusive = model_result["abusive"]
-    confidence = "high" if model_result["abusive"] else "low"
+
+def evaluate_abuse(text: str) -> dict:
+    normalized = normalize_for_abuse_detection(text)
+    matches = [pattern for pattern in ABUSIVE_WORD_PATTERNS if re.search(pattern, normalized)]
+    abusive = bool(matches)
+    model_result = {
+        "abusive": abusive,
+        "severity": "medium" if abusive else "low",
+        "raw": "deterministic_match" if abusive else "deterministic_clean",
+        "matched_patterns": matches[:3],
+        "normalized_excerpt": normalized[:120],
+    }
+    # region agent log
+    debug_log(
+        "initial-debug",
+        "H2",
+        "main.py:evaluate_abuse",
+        "Deterministic abuse evaluation completed",
+        {
+            "abusive": abusive,
+            "matched_count": len(matches),
+            "normalized_excerpt": normalized[:120],
+        },
+    )
+    # endregion
+
+    confidence = "high" if abusive else "high"
     return {
         "abusive": abusive,
         "confidence": confidence,
@@ -430,7 +469,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
         provider, client = get_client()
         if latest_user_message:
-            abuse_eval = evaluate_abuse(provider, client, latest_user_message)
+            abuse_eval = evaluate_abuse(latest_user_message)
             # region agent log
             debug_log(
                 "initial-debug",
