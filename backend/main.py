@@ -354,6 +354,14 @@ def evaluate_abuse(
 ) -> dict:
     try:
         model_result = model_assisted_abuse_check(provider, client, text)
+        print(
+            "Moderation result:",
+            {
+                "abusive": model_result["abusive"],
+                "severity": model_result["severity"],
+                "raw": str(model_result["raw"])[:160],
+            },
+        )
         # region agent log
         debug_log(
             "initial-debug",
@@ -368,6 +376,7 @@ def evaluate_abuse(
         )
         # endregion
     except Exception as exc:
+        print(f"Moderation classifier exception: {type(exc).__name__}: {exc}")
         # region agent log
         debug_log(
             "initial-debug",
